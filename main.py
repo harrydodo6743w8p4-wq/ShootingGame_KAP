@@ -22,7 +22,7 @@ CYAN   = (  0, 220, 220)
 P_W, P_H         = 80, 80
 P_SPEED          = 5
 P_COOLDOWN       = 15
-P_HIT_W, P_HIT_H = 28, 28
+P_HIT_W, P_HIT_H = 8, 8    # 画像(80×80)の約10%: コアのみ判定
 PLAYER_MAX_HP    = 3
 INVINCIBLE_TIME  = 120
 BANK_ANGLE       = 18.0
@@ -781,6 +781,8 @@ class PlayScene(Scene):
             _play(a.snd_go_expl)
             _play(a.snd_dead)
             pygame.time.wait(700)
+            # wait 中に溜まったキーイベントを破棄してから遷移
+            pygame.event.clear()
             self._game.last_score = self._score
             return GameState.GAMEOVER
         return None
@@ -790,8 +792,12 @@ class PlayScene(Scene):
 class GameOverScene(Scene):
     """ゲームオーバーシーン。キー入力があるまで画面を維持し続ける"""
 
+    # シーン生成後この秒数はキー入力を無視（誤入力防止）
+    _INPUT_BLOCK_SEC = 1.0
+
     def __init__(self, game: 'Game'):
-        self._game = game
+        self._game       = game
+        self._birth_tick = pygame.time.get_ticks()   # 生成時刻を記録
 
         # BGM 切り替え（一度だけ）
         game.music.play_gameover()
@@ -803,11 +809,17 @@ class GameOverScene(Scene):
             f"Score: {game.last_score}  │  キーを押してタイトルへ戻る",
             True, GRAY)
 
+    def _input_ready(self) -> bool:
+        """生成から _INPUT_BLOCK_SEC 秒経過したら入力を受け付ける"""
+        elapsed = (pygame.time.get_ticks() - self._birth_tick) / 1000.0
+        return elapsed >= self._INPUT_BLOCK_SEC
+
     def handle_event(self, ev: pygame.event.Event) -> GameState | None:
-        # Space / Enter / R でタイトルへ戻る
+        # 生成直後は入力を無視（wait 中に溜まったイベントの誤処理を防ぐ二重ガード）
+        if not self._input_ready():
+            return None
         if ev.type == pygame.KEYDOWN:
-            if ev.key in (pygame.K_SPACE, pygame.K_RETURN, pygame.K_r):
-                return GameState.TITLE
+            return GameState.TITLE   # どのキーでもタイトルへ
         return None
 
     def update(self) -> GameState | None:
@@ -816,8 +828,11 @@ class GameOverScene(Scene):
 
     def draw(self, surf: pygame.Surface):
         surf.blit(self._surf, (0, 0))
-        surf.blit(self._hint,
-                  (SCREEN_W // 2 - self._hint.get_width() // 2, SCREEN_H - 50))
+        # 入力受付前はヒントを薄く表示
+        alpha_hint = 255 if self._input_ready() else 80
+        hint = self._hint.copy()
+        hint.set_alpha(alpha_hint)
+        surf.blit(hint, (SCREEN_W // 2 - hint.get_width() // 2, SCREEN_H - 50))
 
 
 # ════════════════════════ ゲームコントローラ ══════════════════
