@@ -54,6 +54,11 @@ SPECIAL_COOLDOWN = 30 * FPS
 MISSILE_W        = 400
 MISSILE_H        = 400
 
+# ステージ
+STAGE2_SCORE          = 1001
+STAGE3_SCORE          = 3001
+STAGE_ANNOUNCE_FRAMES = 150   # 2.5 秒
+
 
 # グリッチフォントパス
 FONT_GLITCH = '瀞ノグリッチゴシックH4.ttf'
@@ -82,6 +87,45 @@ def load_snd(path: str) -> pygame.mixer.Sound | None:
     except Exception:
         return None
 
+def _score_to_stage(score: int) -> int:
+    """スコアから現在のステージ番号を返す"""
+    if score >= STAGE3_SCORE: return 3
+    if score >= STAGE2_SCORE: return 2
+    return 1
+
+# ステージ別難易度係数 (speed_mul, spawn_interval_mul)
+STAGE_MULS = {1: (1.0, 1.0), 2: (1.1, 0.9), 3: (1.2, 0.8)}
+
+def _make_space_bg() -> pygame.Surface:
+    """Stage2: 黒背景 + 白い星をランダム配置した宇宙背景"""
+    surf = pygame.Surface((SCREEN_W, SCREEN_H))
+    surf.fill(BLACK)
+    rng = random.Random(42)   # シード固定で毎回同じ星配置
+    for _ in range(200):
+        x = rng.randint(0, SCREEN_W - 1)
+        y = rng.randint(0, SCREEN_H - 1)
+        r = rng.randint(1, 2)
+        b = rng.randint(180, 255)
+        pygame.draw.circle(surf, (b, b, b), (x, y), r)
+    return surf
+
+def _make_lava_bg() -> pygame.Surface:
+    """Stage3: 黒背景 + 赤・オレンジの星 + 惑星っぽい円"""
+    surf = pygame.Surface((SCREEN_W, SCREEN_H))
+    surf.fill(BLACK)
+    rng = random.Random(99)
+    lava_colors = [(255, 80, 0), (255, 150, 30), (255, 50, 50), (200, 40, 0)]
+    for _ in range(120):
+        x = rng.randint(0, SCREEN_W - 1)
+        y = rng.randint(0, SCREEN_H - 1)
+        r = rng.randint(1, 2)
+        pygame.draw.circle(surf, rng.choice(lava_colors), (x, y), r)
+    for cx, cy, pr in [(170, 180, 55), (520, 640, 42), (360, 430, 35)]:
+        pygame.draw.circle(surf, (160, 30,   0), (cx, cy), pr)
+        pygame.draw.circle(surf, (210, 70,  10), (cx, cy), int(pr * 0.65))
+        pygame.draw.circle(surf, (255, 130, 30), (cx, cy), int(pr * 0.3))
+    return surf
+
 
 # ═══════════════════════ アセット管理 ════════════════════════
 class Assets:
@@ -100,6 +144,8 @@ class Assets:
             pygame.image.load('background.png').convert(), (SCREEN_W, SCREEN_W))
         self.bg_title = pygame.transform.smoothscale(
             pygame.image.load('title_bg.png').convert(), (SCREEN_W, SCREEN_H))
+        self.bg_space = _make_space_bg()
+        self.bg_lava  = _make_lava_bg()
 
         # スプライト画像
         self.img_player  = load_img('player.png',          (P_W,       P_H))
@@ -607,7 +653,12 @@ class PlayScene(Scene):
         a = game.assets
 
         # スプライトグループ
-        self._bg         = ScrollBG(a.bg_game)
+        self._bgs = {
+            1: ScrollBG(a.bg_game),
+            2: ScrollBG(a.bg_space),
+            3: ScrollBG(a.bg_lava),
+        }
+        self._bg             = self._bgs[1]
         self._player_grp = pygame.sprite.GroupSingle(Player(a.img_player))
         self._pbullets   = pygame.sprite.Group()
         self._enemies    = pygame.sprite.Group()
@@ -622,6 +673,8 @@ class PlayScene(Scene):
         self._special_charge = 0
         self._missile: Missile | None = None
         self._flash_surf     = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        self._current_stage        = 1
+        self._stage_announce_timer = 0
 
         self._hud = HudRenderer(a)
 
@@ -657,9 +710,19 @@ class PlayScene(Scene):
         a     = self._game.assets
         score = self._score
 
-        # 難易度スケール
-        self._e_speed  = E_SPEED_BASE + score * 0.008
-        spawn_ivl      = max(SPAWN_MIN, SPAWN_BASE - score // 8)
+        # ステージ判定・切り替え
+        new_stage = _score_to_stage(score)
+        if new_stage != self._current_stage:
+            self._current_stage        = new_stage
+            self._bg                   = self._bgs[new_stage]
+            self._stage_announce_timer = STAGE_ANNOUNCE_FRAMES
+        if self._stage_announce_timer > 0:
+            self._stage_announce_timer -= 1
+
+        # 難易度スケール（ステージ係数適用）
+        s_mul, p_mul  = STAGE_MULS[self._current_stage]
+        self._e_speed = (E_SPEED_BASE + score * 0.008) * s_mul
+        spawn_ivl     = max(SPAWN_MIN, int((SPAWN_BASE - score // 8) * p_mul))
 
         if self._special_charge < SPECIAL_COOLDOWN:
             self._special_charge += 1
@@ -753,6 +816,14 @@ class PlayScene(Scene):
                 self._flash_surf.fill(
                     (255, 255, 255, self._missile.flash_alpha))
                 surf.blit(self._flash_surf, (0, 0))
+
+        # ステージ演出
+        if self._stage_announce_timer > 0:
+            txt = f"STAGE  {self._current_stage}"
+            fnt = self._game.assets.font_g52
+            tx  = SCREEN_W // 2 - fnt.size(txt)[0] // 2
+            ty  = SCREEN_H // 2 - fnt.size(txt)[1] // 2
+            GlitchRenderer.glitch(surf, fnt, txt, tx, ty, 6)
 
         # HUD
         self._hud.draw_score(surf, self._score)
